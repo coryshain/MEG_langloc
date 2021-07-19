@@ -43,6 +43,23 @@ def select_tag(x):
     tag = x['postag'][pos]
     return tag
 
+def map_cols(x):
+    if x == 'behmat1':
+        return 'Run'
+    if x == 'behmat2':
+        return 'Set'
+    if x == 'behmat3':
+        return 'Trial'
+    if x == 'behmat4':
+        return 'Condition'
+    if x == 'behmat5':
+        return 'Sentence'
+    if x == 'behmat6':
+        return 'Response'
+    if x == 'behmat7':
+        return 'RT'
+    return x
+
 parse_subject = re.compile('.*FED([0-9]+)$')
 parse_file = re.compile('data_(s|nw)([0-9]+)_trial([0-9]+).mat$')
 parse_run = re.compile('.*run([0-9]).csv$')
@@ -53,6 +70,7 @@ POS = 1
 TRIAL = 2
 S_FILES = ['stim%d.mat' % i for i in range(1, 13)]
 NW_FILES = ['stim%d.mat' % i for i in range(31, 43)]
+
 
 topdir = 'data/english/timing_langloc_Eng/behavioral_langloc/'
 
@@ -69,6 +87,7 @@ for _dir in dirs:
         _Y = []
         for behmat in [_dir + '/' + x for x in os.listdir(_dir) if x.endswith('.csv')]:
             __Y = pd.read_csv(behmat)
+            __Y = __Y.rename(map_cols, axis=1)
             run = int(parse_run.search(behmat).group(1))
             if 'stim' in __Y:
                 col = 'stim'
@@ -203,7 +222,6 @@ for _dir in dirs:
 
                     if cond == 'S': # For now, we're just using the sentences condition
                         if path in bad_trials:
-                            print(path)
                             Y = Y[~(
                                 (Y.subject == subject) &
                                 (Y.cond == cond) &
@@ -229,17 +247,19 @@ for _dir in dirs:
                             # Resample to 10ms chunks, i.e. 1/5 resolution
                             F = signal.resample(F, 140, axis=0)
                             time_ix = np.arange(3, len(time), 5) # starts at 3, midpoint of 10ms frame
-                            time_base = Y[
+                            Y_match = Y[
                                 (Y.subject == subject) &
                                 (Y.cond == cond) &
                                 (Y.position == position) &
                                 (Y.trial == trial)
-                            ].time.values
-                            if len(time_base):
-                                time_base = time_base[0]
-                            else:
-                                time_base = 0.
+                            ]
+                            time_base = Y_match.time.values
+                            if not len(time_base):
+                                stderr('No stimuli matching this series were found in Y. Key: <%s, %s, %s, %s>. Skipping...\n' % (subject, cond, position, trial))
+                                continue
+                            time_base = np.squeeze(time_base)
                             time = time[time_ix] + time_base
+                            run = np.squeeze(Y_match.run)
 
                             # Construct the output dataframe
                             _X = pd.DataFrame(F, columns=channel_names)
@@ -249,8 +269,56 @@ for _dir in dirs:
                             _X['position'] = position
                             _X['trial'] = trial
                             _X['time'] = time
-                            X.append(_X)
+                            _X['run'] = run
+
+                            X.append((subject, run, time_base, cond, trial, position, _X))
+
+# De-epoch by trimming overlapping MEG images.
+X = sorted(X, key=lambda x: x[:3]) # sorting by subject, run, and time reconstitutes the order of the original series
+key_series_prev = None
+_X_prev = None
+for i, _X in enumerate(X):
+    subject = _X[0]
+    run = _X[1]
+    key_series = (subject, run)
+    time_base = _X[2]
+    cond = _X[3]
+    trial = _X[4]
+    position = _X[5]
+    _X = _X[6]
+
+    # print('subject')
+    # print(subject)
+    # print('run')
+    # print(run)
+    # print('key_series')
+    # print(key_series)
+    # print('time_base')
+    # print(time_base)
+    # print('cond')
+    # print(cond)
+    # print('trial')
+    # print(trial)
+    # print('position')
+    # print(position)
+    # input()
+
+    if _X_prev is not None and key_series == key_series_prev:
+        # Trim measures from the last epoch (if applicable) that
+        # extend beyond this epoch's start time.
+        _X_prev = X[i-1]
+        _X_prev = _X_prev[_X_prev.time < time_base]
+        X[i-1] = _X_prev
+
+        # Trim measures from this epoch that extend beyond the (trimmed)
+        # last epoch's end time
+        _X = _X[_X.time > np.max(_X_prev.time)]
+
+    X[i] = _X
+    key_series_prev = key_series
+    _X_prev = _X
+
+X = pd.concat(X, axis=0)
 
 Y.to_csv('data/english/Y.csv', sep=' ', index=False, na_rep='NaN')
-X = pd.concat(X, axis=0)
 X.to_csv('data/english/X.csv', sep=' ', index=False, na_rep='NaN')
