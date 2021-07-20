@@ -76,8 +76,8 @@ topdir = 'data/english/timing_langloc_Eng/behavioral_langloc/'
 
 stderr('Loading stimulus data...\n')
 dirs = [topdir + x for x in os.listdir(topdir) if os.path.isdir(topdir + x)]
-Y = []
-timestamps = []
+words = []
+word_timestamps = []
 for _dir in dirs:
     subject = os.path.basename(_dir)[:3]
     if int(subject) != 8 and int(subject) != 14: # Filter bugged subjects
@@ -121,10 +121,10 @@ for _dir in dirs:
             __Y['postag'] = __Y.apply(tag, axis=1)
 
             # Tile out by word
-            words = __Y[col].str.split(' ').apply(pd.Series, 1).stack().str.lower()
-            words.index = words.index.droplevel(-1)
-            words.name = 'word'
-            __Y = __Y.join(words)
+            __words = __Y[col].str.split(' ').apply(pd.Series, 1).stack().str.lower()
+            __words.index = __words.index.droplevel(-1)
+            __words.name = 'word'
+            __Y = __Y.join(__words)
             del __Y[col]
 
             __Y['position'] = __Y.groupby('trial').cumcount() + 1
@@ -134,7 +134,7 @@ for _dir in dirs:
         _Y['postagsimp'] = _Y['postag'].apply(simplify_tags)
         _Y['wlen'] = _Y['word'].str.len()
         _Y['trial'] = _Y.groupby(['cond', 'position']).cumcount() + 1
-        Y.append(_Y)
+        words.append(_Y)
 
         # Process timing tables
         # Try tables named 'sN.mat'/'nwN.mat'
@@ -150,7 +150,7 @@ for _dir in dirs:
                 _timestamps['cond'] = 'S'
             _timestamps['position'] = int(position)
             _timestamps['subject'] = subject
-            timestamps.append(_timestamps)
+            word_timestamps.append(_timestamps)
 
         # Now try tables named 'stimN.mat'
         for basename in [x for x in os.listdir(_dir) if (x.startswith('stim') and (x in S_FILES or x in NW_FILES))]:
@@ -168,21 +168,21 @@ for _dir in dirs:
                 cond = 'S'
             _timestamps['position'] = int(position)
             _timestamps['subject'] = subject
-            timestamps.append(_timestamps)
+            word_timestamps.append(_timestamps)
 
 
-Y = pd.concat(Y, axis=0).reset_index(drop=True)
-timestamps = pd.concat(timestamps, axis=0).reset_index(drop=True)
-Y = Y.merge(timestamps, on=['subject', 'cond', 'trial', 'position'])
-Y = Y.sort_values(['subject', 'run', 'time']).reset_index(drop=True)
+words = pd.concat(words, axis=0).reset_index(drop=True)
+word_timestamps = pd.concat(word_timestamps, axis=0).reset_index(drop=True)
+words = words.merge(word_timestamps, on=['subject', 'cond', 'trial', 'position'])
+words = words.sort_values(['subject', 'run', 'time']).reset_index(drop=True)
 
 stderr('Loading MEG data...\n')
 topdir = 'data/english/'
 dirs = [topdir + x for x in os.listdir(topdir) if x.startswith('FED')]
 
 # Iterate subjects
-X = []
-subjects = set(Y['subject'].unique())
+MEG = []
+subjects = set(words['subject'].unique())
 for _dir in dirs:
     # Get subject ID
     subject = 's' + parse_subject.match(_dir).groups()[SUBJ]
@@ -220,13 +220,13 @@ for _dir in dirs:
                     else:
                         cond = 'S'
 
-                    if cond == 'S': # For now, we're just using the sentences condition
+                    if cond in ['S', 'N']:
                         if path in bad_trials:
-                            Y = Y[~(
-                                (Y.subject == subject) &
-                                (Y.cond == cond) &
-                                (Y.position == position) &
-                                (Y.trial == trial)
+                            words = words[~(
+                                    (words.subject == subject) &
+                                    (words.cond == cond) &
+                                    (words.position == position) &
+                                    (words.trial == trial)
                             )]
                         else:
                             # Load the timecourses (each 1.4s long measured every 2ms)
@@ -247,12 +247,12 @@ for _dir in dirs:
                             # Resample to 10ms chunks, i.e. 1/5 resolution
                             F = signal.resample(F, 140, axis=0)
                             time_ix = np.arange(3, len(time), 5) # starts at 3, midpoint of 10ms frame
-                            Y_match = Y[
-                                (Y.subject == subject) &
-                                (Y.cond == cond) &
-                                (Y.position == position) &
-                                (Y.trial == trial)
-                            ]
+                            Y_match = words[
+                                (words.subject == subject) &
+                                (words.cond == cond) &
+                                (words.position == position) &
+                                (words.trial == trial)
+                                ]
                             time_base = Y_match.time.values
                             if not len(time_base):
                                 stderr('No stimuli matching this series were found in Y. Key: <%s, %s, %s, %s>. Skipping...\n' % (subject, cond, position, trial))
@@ -271,13 +271,13 @@ for _dir in dirs:
                             _X['time'] = time
                             _X['run'] = run
 
-                            X.append((subject, run, time_base, cond, trial, position, _X))
+                            MEG.append((subject, run, time_base, cond, trial, position, _X))
 
 # De-epoch by trimming overlapping MEG images.
-X = sorted(X, key=lambda x: x[:3]) # sorting by subject, run, and time reconstitutes the order of the original series
+MEG = sorted(MEG, key=lambda x: x[:3]) # sorting by subject, run, and time reconstitutes the order of the original series
 key_series_prev = None
 _X_prev = None
-for i, _X in enumerate(X):
+for i, _X in enumerate(MEG):
     subject = _X[0]
     run = _X[1]
     key_series = (subject, run)
@@ -306,19 +306,19 @@ for i, _X in enumerate(X):
     if _X_prev is not None and key_series == key_series_prev:
         # Trim measures from the last epoch (if applicable) that
         # extend beyond this epoch's start time.
-        _X_prev = X[i-1]
+        _X_prev = MEG[i - 1]
         _X_prev = _X_prev[_X_prev.time < time_base]
-        X[i-1] = _X_prev
+        MEG[i - 1] = _X_prev
 
         # Trim measures from this epoch that extend beyond the (trimmed)
         # last epoch's end time
         _X = _X[_X.time > np.max(_X_prev.time)]
 
-    X[i] = _X
+    MEG[i] = _X
     key_series_prev = key_series
     _X_prev = _X
 
-X = pd.concat(X, axis=0)
+MEG = pd.concat(MEG, axis=0)
 
-Y.to_csv('data/english/Y.csv', sep=' ', index=False, na_rep='NaN')
-X.to_csv('data/english/X.csv', sep=' ', index=False, na_rep='NaN')
+words.to_csv('data/english/words_eng.csv', sep=' ', index=False, na_rep='NaN')
+MEG.to_csv('data/english/MEG_eng.csv', sep=' ', index=False, na_rep='NaN')
