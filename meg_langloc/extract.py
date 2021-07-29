@@ -232,6 +232,7 @@ for _dir in dirs:
                             # Load the timecourses (each 1.4s long measured every 2ms)
                             src = io.loadmat(__dir + '/' + path)
                             F = src['F']
+                            F *= 1e15 # convert to fT
                             F_mag = F[mag_channel_ix].T
                             F_grad1 = F[grad1_channel_ix].T
                             F_grad2 = F[grad2_channel_ix].T
